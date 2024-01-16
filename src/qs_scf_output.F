@@ -369,7 +369,6 @@ CONTAINS
                         mo_occ_tmp(imo) = mo_occ(imo)
                      END DO
                      mo_occ_tmp(nmo + 1:) = 0.0_dp
-                     WRITE (*, *) "test"
                      NULLIFY (ao_ao_fm_struct)
                      CALL cp_fm_struct_create(ao_ao_fm_struct, &
                                               nrow_global=nao, &
@@ -390,7 +389,6 @@ CONTAINS
                      CALL cp_fm_release(work_fm)
                      CALL cp_fm_release(ortho_fm)
                      CALL cp_fm_release(matrix_ks_fm)
-
                   ELSE
                      CALL cp_fm_to_fm(mo_coeff, mo_coeff_tmp, nmo)
                   END IF
