@@ -12,11 +12,14 @@ MODULE qs_scf_output
    USE atomic_kind_types,               ONLY: atomic_kind_type
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm
    USE cp_dbcsr_output,                 ONLY: cp_dbcsr_write_sparse_matrix
+   USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
-   USE cp_fm_types,                     ONLY: cp_fm_init_random,&
+   USE cp_fm_types,                     ONLY: cp_fm_create,&
+                                              cp_fm_release,&
                                               cp_fm_to_fm,&
                                               cp_fm_type
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -30,7 +33,7 @@ MODULE qs_scf_output
                                               dbcsr_type
    USE input_constants,                 ONLY: &
         becke_cutoff_element, becke_cutoff_global, cdft_alpha_constraint, cdft_beta_constraint, &
-        cdft_charge_constraint, cdft_magnetization_constraint, ot_precond_full_all, &
+        cdft_charge_constraint, cdft_magnetization_constraint, cholesky_restore, &
         outer_scf_becke_constraint, outer_scf_hirshfeld_constraint, outer_scf_optimizer_bisect, &
         outer_scf_optimizer_broyden, outer_scf_optimizer_diis, outer_scf_optimizer_newton, &
         outer_scf_optimizer_newton_ls, outer_scf_optimizer_sd, outer_scf_optimizer_secant, &
@@ -49,7 +52,6 @@ MODULE qs_scf_output
    USE particle_types,                  ONLY: particle_type
    USE physcon,                         ONLY: evolt,&
                                               kcalmol
-   USE preconditioner_types,            ONLY: preconditioner_type
    USE ps_implicit_types,               ONLY: MIXED_BC,&
                                               MIXED_PERIODIC_BC,&
                                               NEUMANN_BC,&
@@ -74,10 +76,10 @@ MODULE qs_scf_output
                                               get_mo_set,&
                                               init_mo_set,&
                                               mo_set_type
-   USE qs_ot_eigensolver,               ONLY: ot_eigensolver
    USE qs_rho_types,                    ONLY: qs_rho_get,&
                                               qs_rho_type
    USE qs_sccs,                         ONLY: print_sccs_results
+   USE qs_scf_methods,                  ONLY: eigensolver
    USE qs_scf_types,                    ONLY: ot_method_nr,&
                                               qs_scf_env_type,&
                                               special_diag_method_nr
@@ -186,8 +188,9 @@ CONTAINS
       CHARACTER(LEN=3*default_string_length)             :: message
       CHARACTER(LEN=default_string_length), &
          DIMENSION(:), POINTER                           :: tmpstringlist
-      INTEGER                                            :: handle, ikp, ispin, iw, kpoint, nao, &
-                                                            nelectron, nkp, nmo, nmo_tmp, nspin
+      INTEGER                                            :: handle, ikp, imo, ispin, iw, kpoint, &
+                                                            my_cholesky_restore, nao, nelectron, &
+                                                            nkp, nmo, nmo_tmp, nspin
       INTEGER, DIMENSION(2)                              :: nmos_occ
       INTEGER, DIMENSION(:), POINTER                     :: mo_index_range
       LOGICAL                                            :: do_kpoints, print_eigvals, &
@@ -195,11 +198,13 @@ CONTAINS
                                                             print_occup, print_occup_stats
       REAL(KIND=dp)                                      :: flexible_electron_count, maxocc, n_el_f, &
                                                             occup_stats_occ_threshold
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues, mo_eigenvalues_tmp
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: mo_eigenvalues, mo_eigenvalues_tmp, &
+                                                            mo_occ, mo_occ_tmp
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(atomic_kind_type), DIMENSION(:), POINTER      :: atomic_kind_set
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
-      TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
+      TYPE(cp_fm_struct_type), POINTER                   :: ao_ao_fm_struct, fm_struct_tmp
+      TYPE(cp_fm_type)                                   :: matrix_ks_fm, ortho_fm, work_fm
       TYPE(cp_fm_type), POINTER                          :: mo_coeff, mo_coeff_tmp
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: ks, s
@@ -210,7 +215,6 @@ CONTAINS
       TYPE(mo_set_type), POINTER                         :: mo_set_tmp
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(particle_type), DIMENSION(:), POINTER         :: particle_set
-      TYPE(preconditioner_type), POINTER                 :: local_preconditioner
       TYPE(qs_kind_type), DIMENSION(:), POINTER          :: qs_kind_set
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(section_vals_type), POINTER                   :: dft_section, input
@@ -309,6 +313,7 @@ CONTAINS
                CALL get_mo_set(mo_set=mos(ispin), &
                                mo_coeff=mo_coeff, &
                                eigenvalues=mo_eigenvalues, &
+                               occupation_numbers=mo_occ, &
                                maxocc=maxocc, &
                                nelectron=nelectron, &
                                n_el_f=n_el_f, &
@@ -359,23 +364,33 @@ CONTAINS
                IF (final_mos) THEN
                   ! Prepare printout of additional unoccupied MOs
                   IF (nmo_tmp > nmo) THEN
-                     CALL cp_fm_init_random(mo_set_tmp%mo_coeff, nmo_tmp)
-                     ! The FULL_ALL preconditioner makes not much sense for the unoccupied orbitals
-                     NULLIFY (local_preconditioner)
-                     IF (ASSOCIATED(scf_env%ot_preconditioner)) THEN
-                        local_preconditioner => scf_env%ot_preconditioner(1)%preconditioner
-                        IF (local_preconditioner%in_use == ot_precond_full_all) THEN
-                           NULLIFY (local_preconditioner)
-                        END IF
-                     END IF
-                     CALL ot_eigensolver(matrix_h=matrix_ks, &
-                                         matrix_s=matrix_s, &
-                                         matrix_c_fm=mo_coeff_tmp, &
-                                         matrix_orthogonal_space_fm=mo_coeff, &
-                                         eps_gradient=scf_control%eps_lumos, &
-                                         preconditioner=local_preconditioner, &
-                                         iter_max=scf_control%max_iter_lumos, &
-                                         size_ortho_space=nmo)
+                     mo_occ_tmp => mo_set_tmp%occupation_numbers
+                     DO imo = 1, nmo
+                        mo_occ_tmp(imo) = mo_occ(imo)
+                     END DO
+                     mo_occ_tmp(nmo + 1:) = 0.0_dp
+                     WRITE (*, *) "test"
+                     NULLIFY (ao_ao_fm_struct)
+                     CALL cp_fm_struct_create(ao_ao_fm_struct, &
+                                              nrow_global=nao, &
+                                              ncol_global=nao, &
+                                              context=blacs_env, &
+                                              para_env=para_env)
+                     CALL cp_fm_create(matrix_ks_fm, ao_ao_fm_struct)
+                     CALL cp_fm_create(ortho_fm, ao_ao_fm_struct)
+                     CALL cp_fm_create(work_fm, ao_ao_fm_struct)
+                     CALL cp_fm_struct_release(ao_ao_fm_struct)
+                     CALL copy_dbcsr_to_fm(matrix_s, ortho_fm)
+                     CALL copy_dbcsr_to_fm(matrix_ks, matrix_ks_fm)
+                     CALL cp_fm_cholesky_decompose(ortho_fm)
+                     my_cholesky_restore = cholesky_restore
+                     CALL eigensolver(matrix_ks_fm=matrix_ks_fm, mo_set=mo_set_tmp, ortho=ortho_fm, &
+                                      work=work_fm, cholesky_method=my_cholesky_restore, &
+                                      do_level_shift=.FALSE., level_shift=0.0_dp, use_jacobi=.FALSE.)
+                     CALL cp_fm_release(work_fm)
+                     CALL cp_fm_release(ortho_fm)
+                     CALL cp_fm_release(matrix_ks_fm)
+
                   ELSE
                      CALL cp_fm_to_fm(mo_coeff, mo_coeff_tmp, nmo)
                   END IF
