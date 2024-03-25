@@ -137,6 +137,9 @@ CONTAINS
       CALL section_add_subsection(section, subsection)
       CALL section_release(subsection)
 
+      CALL create_nac_section(subsection)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
    END SUBROUTINE create_properties_section
 
 ! **************************************************************************************************
@@ -2364,5 +2367,56 @@ CONTAINS
       CALL keyword_release(keyword)
 
    END SUBROUTINE create_tipscan_section
+
+   SUBROUTINE create_nac_section(section)
+      TYPE(section_type), POINTER                        :: section
+
+      TYPE(keyword_type), POINTER                        :: keyword
+      TYPE(section_type), POINTER                        :: print_key, subsection
+
+      CPASSERT(.NOT. ASSOCIATED(section))
+      CALL section_create(section, __LOCATION__, name="NAC", &
+                          description="Parameters needed to set Non-Adiabatic Coulping calculation.", &
+                          n_keywords=1, n_subsections=1, repeats=.FALSE.)
+
+      NULLIFY (keyword)
+
+      CALL keyword_create(keyword, __LOCATION__, &
+                          name="_SECTION_PARAMETERS_", &
+                          description="Controls the activation of the NAC procedure", &
+                          default_l_val=.FALSE., &
+                          lone_keyword_l_val=.TRUE.)
+      CALL section_add_keyword(section, keyword)
+      CALL keyword_release(keyword)
+
+      NULLIFY (subsection)
+      CALL section_create(subsection, __LOCATION__, &
+                          name="ACTIVE_SPACE", &
+                          description="Controls the requested subset of active space for calculating and printing NAC.", &
+                          repeats=.FALSE., &
+                          n_keywords=2, n_subsections=0)
+      CALL keyword_create(keyword, __LOCATION__, name="OCC", &
+                          description="Number of occupied orbitals in active space.", &
+                          usage="OCC 10", &
+                          n_var=1, type_of_var=integer_t, default_i_val=0)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL keyword_create(keyword, __LOCATION__, name="VIR", &
+                          description="Number of virtual orbitals in active space.", &
+                          usage="VIR 10", &
+                          n_var=1, type_of_var=integer_t, default_i_val=0)
+      CALL section_add_keyword(subsection, keyword)
+      CALL keyword_release(keyword)
+      CALL section_add_subsection(section, subsection)
+      CALL section_release(subsection)
+
+      NULLIFY (print_key)
+      CALL cp_print_key_section_create(print_key, __LOCATION__, name="PRINT", &
+                                       description="Controls the behavior of printing NAC.", &
+                                       print_level=medium_print_level, filename="NAC")
+      CALL section_add_subsection(section, print_key)
+      CALL section_release(print_key)
+
+   END SUBROUTINE create_nac_section
 
 END MODULE input_cp2k_properties_dft

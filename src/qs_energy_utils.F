@@ -52,6 +52,7 @@ MODULE qs_energy_utils
    USE qs_ks_types,                     ONLY: qs_ks_env_type
    USE qs_linres_module,                ONLY: linres_calculation_low
    USE qs_local_rho_types,              ONLY: local_rho_type
+   USE qs_nac_methods,                  ONLY: nac
    USE qs_rho0_ggrid,                   ONLY: integrate_vhg0_rspace
    USE qs_rho_atom_types,               ONLY: rho_atom_type,&
                                               zero_rho_atom_integrals
@@ -194,6 +195,10 @@ CONTAINS
 
       IF (dft_control%tddfpt2_control%enabled) THEN
          CALL tddfpt(qs_env, calc_forces)
+      END IF
+
+      IF (dft_control%nac_control%enabled) THEN
+         CALL nac(qs_env)
       END IF
 
       ! post-SCF bandstructure calculation from higher level methods
