@@ -619,7 +619,7 @@ CONTAINS
       logger => cp_get_default_logger()
 
       IF (cp_print_key_should_output(logger%iter_info, print_section) /= 0) THEN
-         unit = cp_print_key_unit_nr(logger, print_section, extension=".nacLog")
+         unit = cp_print_key_unit_nr(logger, print_section, extension=".nacLog", file_status="REPLACE")
          DO ispin = 1, SIZE(mos)
             CALL cp_fm_write_formatted(mos(ispin), unit)
          END DO
