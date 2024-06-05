@@ -9,15 +9,18 @@ MODULE qs_nac_methods
    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
    USE cp_control_types,                ONLY: dft_control_type,&
                                               nac_control_type
-   USE cp_dbcsr_operations,             ONLY: cp_dbcsr_sm_fm_multiply
+   USE cp_dbcsr_operations,             ONLY: copy_dbcsr_to_fm,&
+                                              cp_dbcsr_sm_fm_multiply
    USE cp_fm_basic_linalg,              ONLY: cp_fm_gemm,&
                                               cp_fm_scale_and_add
+   USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: cp_fm_create,&
                                               cp_fm_get_info,&
                                               cp_fm_init_random,&
+                                              cp_fm_release,&
                                               cp_fm_set_element,&
                                               cp_fm_to_fm,&
                                               cp_fm_type,&
@@ -30,27 +33,22 @@ MODULE qs_nac_methods
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE dbcsr_api,                       ONLY: dbcsr_p_type,&
                                               dbcsr_type
-   USE input_constants,                 ONLY: ot_precond_full_all
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
                                               section_vals_type
+   USE input_constants,                 ONLY: cholesky_restore
    USE kinds,                           ONLY: dp
    USE message_passing,                 ONLY: mp_para_env_type
-   USE preconditioner_types,            ONLY: preconditioner_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
-   USE qs_mo_methods,                   ONLY: calculate_subspace_eigenvalues
-   USE qs_mo_occupation,                ONLY: set_mo_occupation
    USE qs_mo_types,                     ONLY: allocate_mo_set,&
-                                              deallocate_mo_set,&
                                               duplicate_mo_set,&
                                               init_mo_set,&
                                               mo_set_type,&
                                               reassign_allocated_mos
-   USE qs_ot_eigensolver,               ONLY: ot_eigensolver
+   USE qs_scf_methods,                  ONLY: eigensolver
    USE qs_scf_types,                    ONLY: ot_method_nr,&
                                               qs_scf_env_type
-   USE scf_control_types,               ONLY: scf_control_type
 #include "./base/base_uses.f90"
 
    IMPLICIT NONE
@@ -77,7 +75,7 @@ CONTAINS
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: nac_matrix
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo, current_umo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo
       TYPE(nac_control_type), POINTER                    :: nac_control
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
       TYPE(section_vals_type), POINTER                   :: input, nac_section, print_section
@@ -91,8 +89,7 @@ CONTAINS
       CALL get_qs_env(qs_env, &
                       input=input, &
                       dft_control=dft_control, &
-                      scf_env=scf_env, &
-                      mos=current_mo)
+                      scf_env=scf_env)
 
       NULLIFY (nac_control)
       nac_control => dft_control%nac_control
@@ -112,16 +109,14 @@ CONTAINS
          nac_control%dt = cp_unit_from_cp2k(qs_env%sim_time/qs_env%sim_step, "fs")
       END IF
 
-      IF (nac_control%do_eigen) CALL nac_compute_umo(qs_env, current_umo)
+      IF (nac_control%do_eigen) CALL nac_compute_mo(qs_env, current_mo)
 
       IF (.NOT. initial) THEN
-         CALL nac_compute(qs_env, nac_control, current_mo, current_umo, nac_matrix)
+         CALL nac_compute(qs_env, nac_control, current_mo, nac_matrix)
          CALL nac_output(print_section, nac_matrix)
       END IF
 
-      CALL nac_save_last_mo(qs_env, current_mo)
-
-      IF (nac_control%do_eigen) CALL nac_save_last_umo(qs_env, current_umo)
+      IF (nac_control%do_eigen) CALL nac_save_last_mo(qs_env, current_mo)
 
       IF (.NOT. initial) DEALLOCATE (nac_matrix)
 
@@ -143,14 +138,14 @@ CONTAINS
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_init'
 
       INTEGER                                            :: handle
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo, last_umo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo, mos
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (last_mo, last_umo)
+      NULLIFY (last_mo)
       CALL get_qs_env(qs_env, &
-                      last_mo=last_mo, &
-                      last_umo=last_umo)
+                      mos=mos, &
+                      last_mo=last_mo)
       IF (scf_env%method .EQ. ot_method_nr .AND. nac_control%vir_active_space .GT. 0) THEN
          nac_control%do_eigen = .TRUE.
       ELSE IF (scf_env%method .NE. ot_method_nr) THEN
@@ -160,12 +155,11 @@ CONTAINS
       END IF
 
       CALL nac_init_last_mo(qs_env, last_mo)
-      IF (nac_control%do_eigen) CALL nac_init_last_umo(qs_env, last_umo)
 
-      IF (nac_control%occ_active_space .LE. 0) nac_control%occ_active_space = last_mo(1)%nmo
-      nac_control%occ_active_space = MIN(nac_control%occ_active_space, last_mo(1)%nmo)
+      IF (nac_control%occ_active_space .LE. 0) nac_control%occ_active_space = mos(1)%homo
+      nac_control%occ_active_space = MIN(nac_control%occ_active_space, mos(1)%homo)
       IF (nac_control%vir_active_space .LE. 0) nac_control%vir_active_space = 0
-      nac_control%vir_active_space = MIN(nac_control%vir_active_space, last_mo(1)%nao - last_mo(1)%nmo)
+      nac_control%vir_active_space = MIN(nac_control%vir_active_space, mos(1)%nao - mos(1)%homo)
 
       nac_control%dt = -1
 
@@ -183,37 +177,6 @@ CONTAINS
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_init_last_mo'
-
-      INTEGER                                            :: handle, ispin
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
-
-      CALL timeset(routineN, handle)
-
-      NULLIFY (mos)
-      CALL get_qs_env(qs_env, &
-                      mos=mos)
-
-      ALLOCATE (last_mo(SIZE(mos)))
-
-      DO ispin = 1, SIZE(mos)
-         CALL duplicate_mo_set(last_mo(ispin), mos(ispin))
-      END DO
-
-      CALL set_qs_env(qs_env, last_mo=last_mo)
-
-      CALL timestop(handle)
-   END SUBROUTINE nac_init_last_mo
-
-! **************************************************************************************************
-!> \brief ...
-!> \param qs_env ...
-!> \param last_umo ...
-! **************************************************************************************************
-   SUBROUTINE nac_init_last_umo(qs_env, last_umo)
-      TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_umo
-
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_init_last_umo'
 
       INTEGER                                            :: handle, ispin
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
@@ -235,115 +198,103 @@ CONTAINS
       NULLIFY (nac_control)
       nac_control => dft_control%nac_control
 
-      ALLOCATE (last_umo(SIZE(mos)))
+      ALLOCATE (last_mo(SIZE(mos)))
 
       DO ispin = 1, SIZE(mos)
          CALL cp_fm_struct_create(fm_struct_tmp, &
                                   context=blacs_env, &
                                   para_env=para_env, &
                                   nrow_global=mos(ispin)%nao, &
-                                  ncol_global=nac_control%vir_active_space)
-         CALL allocate_mo_set(last_umo(ispin), &
+                                  ncol_global=mos(ispin)%homo + nac_control%vir_active_space)
+         CALL allocate_mo_set(last_mo(ispin), &
                               mos(ispin)%nao, &
-                              nac_control%vir_active_space, &
-                              0, &
+                              mos(ispin)%homo + nac_control%vir_active_space, &
+                              mos(ispin)%nelectron, &
                               mos(ispin)%n_el_f, &
                               mos(ispin)%maxocc, &
                               mos(ispin)%flexible_electron_count)
-         CALL init_mo_set(mo_set=last_umo(ispin), &
+         CALL init_mo_set(mo_set=last_mo(ispin), &
                           fm_struct=fm_struct_tmp, &
-                          name="For saving last unoccupied MO")
+                          name="For saving last MO")
          CALL cp_fm_struct_release(fm_struct_tmp)
-         CALL cp_fm_init_random(last_umo(ispin)%mo_coeff)
+         CALL cp_fm_init_random(last_mo(ispin)%mo_coeff)
       END DO
 
-      CALL set_qs_env(qs_env, last_umo=last_umo)
+      CALL set_qs_env(qs_env, last_mo=last_mo)
 
       CALL timestop(handle)
 
-   END SUBROUTINE nac_init_last_umo
+   END SUBROUTINE nac_init_last_mo
 
 ! **************************************************************************************************
 !> \brief ...
 !> \param qs_env ...
-!> \param current_umo ...
+!> \param current_mo ...
 ! **************************************************************************************************
-   SUBROUTINE nac_compute_umo(qs_env, current_umo)
+   SUBROUTINE nac_compute_mo(qs_env, current_mo)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_umo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo
 
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_compute_umo'
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_compute_mo'
 
-      INTEGER                                            :: handle, ispin
+      INTEGER                                            :: handle, ispin, cholesky_method
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: ao_ao_fm_struct
+      TYPE(cp_fm_type)                                   :: matrix_ks_fm, ortho_fm, work_fm
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks, matrix_s
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo, last_umo
-      TYPE(mp_para_env_type), POINTER                    :: para_env
-      TYPE(preconditioner_type), POINTER                 :: local_preconditioner
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo
       TYPE(qs_scf_env_type), POINTER                     :: scf_env
-      TYPE(scf_control_type), POINTER                    :: scf_control
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (blacs_env, para_env, scf_control, matrix_ks, matrix_s, current_mo)
+      NULLIFY (blacs_env, matrix_ks, matrix_s, current_mo)
       CALL get_qs_env(qs_env, &
                       blacs_env=blacs_env, &
-                      para_env=para_env, &
-                      scf_control=scf_control, &
                       scf_env=scf_env, &
                       matrix_ks=matrix_ks, &
                       matrix_s=matrix_s, &
-                      mos=current_mo, &
-                      last_umo=last_umo)
+                      last_mo=last_mo)
 
-      ALLOCATE (current_umo(SIZE(last_umo)))
+      ALLOCATE (current_mo(SIZE(last_mo)))
 
-      DO ispin = 1, SIZE(last_umo)
-         CALL calculate_subspace_eigenvalues(orbitals=current_mo(ispin)%mo_coeff, &
-                                             ks_matrix=matrix_ks(ispin)%matrix, &
-                                             evals_arg=current_mo(ispin)%eigenvalues, &
-                                             do_rotation=.FALSE.)
-         CALL set_mo_occupation(mo_set=current_mo(ispin))
-         CALL duplicate_mo_set(current_umo(ispin), last_umo(ispin))
-         NULLIFY (local_preconditioner)
-         IF (ASSOCIATED(scf_env%ot_preconditioner)) THEN
-            local_preconditioner => scf_env%ot_preconditioner(1)%preconditioner
-            IF (local_preconditioner%in_use == ot_precond_full_all) THEN
-               NULLIFY (local_preconditioner)
-            END IF
-         END IF
-         CALL ot_eigensolver(matrix_h=matrix_ks(ispin)%matrix, &
-                             matrix_s=matrix_s(1)%matrix, &
-                             matrix_c_fm=current_umo(ispin)%mo_coeff, &
-                             matrix_orthogonal_space_fm=current_mo(ispin)%mo_coeff, &
-                             eps_gradient=scf_control%eps_lumos, &
-                             preconditioner=local_preconditioner, &
-                             iter_max=scf_control%max_iter_lumos, &
-                             size_ortho_space=current_mo(ispin)%nmo)
-         CALL calculate_subspace_eigenvalues(orbitals=current_umo(ispin)%mo_coeff, &
-                                             ks_matrix=matrix_ks(ispin)%matrix, &
-                                             evals_arg=current_umo(ispin)%eigenvalues, &
-                                             do_rotation=.TRUE.)
-         CALL set_mo_occupation(mo_set=current_umo(ispin))
+      CALL cp_fm_struct_create(ao_ao_fm_struct, nrow_global=last_mo(1)%nao, ncol_global=last_mo(1)%nao, context=blacs_env)
+
+      DO ispin = 1, SIZE(last_mo)
+         CALL duplicate_mo_set(current_mo(ispin), last_mo(ispin))
+
+         CALL cp_fm_create(matrix_ks_fm, ao_ao_fm_struct)
+         CALL cp_fm_create(ortho_fm, ao_ao_fm_struct)
+         CALL cp_fm_create(work_fm, ao_ao_fm_struct)
+
+         CALL copy_dbcsr_to_fm(matrix_s(1)%matrix, ortho_fm)
+         CALL copy_dbcsr_to_fm(matrix_ks(ispin)%matrix, matrix_ks_fm)
+         CALL cp_fm_cholesky_decompose(ortho_fm)
+         cholesky_method = cholesky_restore
+         CALL eigensolver(matrix_ks_fm=matrix_ks_fm, mo_set=current_mo(ispin), ortho=ortho_fm, &
+                          work=work_fm, cholesky_method=cholesky_method, &
+                          do_level_shift=.FALSE., level_shift=0.0_dp, use_jacobi=.FALSE.)
+
+         CALL cp_fm_release(work_fm)
+         CALL cp_fm_release(ortho_fm)
+         CALL cp_fm_release(matrix_ks_fm)
       END DO
 
       CALL timestop(handle)
 
-   END SUBROUTINE nac_compute_umo
+   END SUBROUTINE nac_compute_mo
 
 ! **************************************************************************************************
 !> \brief ...
 !> \param qs_env ...
 !> \param nac_control ...
 !> \param current_mo ...
-!> \param current_umo ...
 !> \param nac_matrix ...
 !> \return ...
 ! **************************************************************************************************
-   SUBROUTINE nac_compute(qs_env, nac_control, current_mo, current_umo, nac_matrix)
+   SUBROUTINE nac_compute(qs_env, nac_control, current_mo, nac_matrix)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(nac_control_type), POINTER                    :: nac_control
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo, current_umo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: nac_matrix
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_compute'
@@ -354,14 +305,13 @@ CONTAINS
                                                             nac_matrix_back
       TYPE(cp_fm_type), POINTER                          :: current_smo, last_smo
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo, last_umo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo
 
       CALL timeset(routineN, handle)
 
-      NULLIFY (last_mo, last_umo)
+      NULLIFY (last_mo)
       CALL get_qs_env(qs_env, &
                       last_mo=last_mo, &
-                      last_umo=last_umo, &
                       matrix_s=matrix_s)
 
       nspin = SIZE(last_mo)
@@ -369,14 +319,12 @@ CONTAINS
 
       CALL nac_get_active_space(qs_env, &
                                 last_mo, &
-                                last_umo, &
                                 nac_control%occ_active_space, &
                                 nac_control%vir_active_space, &
                                 last_mo_coeff, &
                                 last_eigenvalues)
       CALL nac_get_active_space(qs_env, &
                                 current_mo, &
-                                current_umo, &
                                 nac_control%occ_active_space, &
                                 nac_control%vir_active_space, &
                                 current_mo_coeff, &
@@ -413,15 +361,14 @@ CONTAINS
 !> \brief ...
 !> \param qs_env ...
 !> \param mo ...
-!> \param umo ...
 !> \param occ_active_space ...
 !> \param vir_active_space ...
 !> \param mo_coeff ...
 !> \param eigenvalues ...
 ! **************************************************************************************************
-   SUBROUTINE nac_get_active_space(qs_env, mo, umo, occ_active_space, vir_active_space, mo_coeff, eigenvalues)
+   SUBROUTINE nac_get_active_space(qs_env, mo, occ_active_space, vir_active_space, mo_coeff, eigenvalues)
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mo, umo
+      TYPE(mo_set_type), DIMENSION(:), POINTER           :: mo
       INTEGER                                            :: occ_active_space, vir_active_space
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: mo_coeff
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: eigenvalues
@@ -455,16 +402,10 @@ CONTAINS
          CALL cp_fm_create(mo_coeff(ispin), fm_struct_tmp)
          CALL cp_fm_to_fm(mo(ispin)%mo_coeff, &
                           mo_coeff(ispin), &
-                          occ_active_space, &
-                          mo(ispin)%nmo - occ_active_space + 1, &
+                          occ_active_space + vir_active_space, &
+                          mo(ispin)%nmo - vir_active_space - occ_active_space + 1, &
                           1)
-         CALL cp_fm_to_fm(umo(ispin)%mo_coeff, &
-                          mo_coeff(ispin), &
-                          vir_active_space, &
-                          1, &
-                          occ_active_space + 1)
-         eigenvalues(ispin, 1:occ_active_space) = mo(ispin)%eigenvalues(mo(ispin)%nmo - occ_active_space + 1:)
-         eigenvalues(ispin, occ_active_space + 1:) = umo(ispin)%eigenvalues(1:vir_active_space)
+         eigenvalues(ispin, :) = mo(ispin)%eigenvalues(mo(ispin)%nmo - vir_active_space - occ_active_space + 1:)
       END DO
 
       CALL timestop(handle)
@@ -570,34 +511,6 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE nac_save_last_mo
-
-! **************************************************************************************************
-!> \brief ...
-!> \param qs_env ...
-!> \param current_umo ...
-! **************************************************************************************************
-   SUBROUTINE nac_save_last_umo(qs_env, current_umo)
-      TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_umo
-
-      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_save_last_umo'
-
-      INTEGER                                            :: handle, ispin
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_umo
-
-      CALL timeset(routineN, handle)
-
-      CALL get_qs_env(qs_env, last_umo=last_umo)
-      DO ispin = 1, SIZE(current_umo)
-         CALL reassign_allocated_mos(last_umo(ispin), current_umo(ispin))
-         CALL deallocate_mo_set(current_umo(ispin))
-      END DO
-
-      DEALLOCATE (current_umo)
-
-      CALL timestop(handle)
-
-   END SUBROUTINE nac_save_last_umo
 
 ! **************************************************************************************************
 !> \brief ...
