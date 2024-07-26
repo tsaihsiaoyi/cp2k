@@ -571,7 +571,7 @@ CONTAINS
                                  IF (l(jshell, jset) /= lu) CYCLE
                                  DO jsgf = first_sgf(jshell, jset), last_sgf(jshell, jset)
                                     j = j + 1
-                                    IF (isgf == jsgf) q_matrix(i, j) = q_block(isgf, jsgf)
+                                    q_matrix(i, j) = q_block(isgf, jsgf)
                                  END DO ! next contracted spherical Gaussian function "jsgf"
                               END DO ! next shell "jshell"
                            END DO ! next shell set "jset"
@@ -679,7 +679,6 @@ CONTAINS
                                        IF (isgf == jsgf) THEN
                                           v_block(isgf, isgf) = u_minus_j*(0.5_dp - fspin*q_matrix(i, i))
                                        ELSE
-                                          CPASSERT(ABS(q_matrix(j, i)) < 1.0E-14_dp)
                                           v_block(isgf, jsgf) = -u_minus_j*fspin*q_matrix(j, i)
                                        END IF
                                     END DO ! next contracted spherical Gaussian function "jsgf"

@@ -551,6 +551,14 @@ MODULE cp_control_types
       REAL(kind=dp), DIMENSION(:), POINTER :: mgrid_e_cutoff => NULL()
    END TYPE tddfpt2_control_type
 
+   TYPE nac_control_type
+      LOGICAL                              :: enabled = .FALSE.
+      LOGICAL                              :: do_eigen = .FALSE.
+      INTEGER                              :: occ_active_space = 0
+      INTEGER                              :: vir_active_space = 0
+      REAL(kind=dp)                        :: dt = 0
+   END TYPE nac_control_type
+
 ! **************************************************************************************************
 ! \brief Control parameters for a DFT calculation
 ! \par History
@@ -564,6 +572,7 @@ MODULE cp_control_types
       TYPE(sccs_control_type), POINTER     :: sccs_control => NULL()
       TYPE(tddfpt_control_type), POINTER   :: tddfpt_control => NULL()
       TYPE(tddfpt2_control_type), POINTER  :: tddfpt2_control => NULL()
+      TYPE(nac_control_type), POINTER      :: nac_control => NULL()
       TYPE(xas_control_type), POINTER      :: xas_control => NULL()
       TYPE(expot_control_type), POINTER    :: expot_control => NULL()
       TYPE(maxwell_control_type), POINTER  :: maxwell_control => NULL()
@@ -644,7 +653,8 @@ MODULE cp_control_types
              expot_control_type, &
              rtp_control_type, &
              sccs_control_type, &
-             stda_control_type
+             stda_control_type, &
+             nac_control_type
 
    ! Public subroutines
 
@@ -655,7 +665,9 @@ MODULE cp_control_types
              admm_control_release, &
              maxwell_control_create, &
              expot_control_create, &
-             ddapc_control_create
+             ddapc_control_create, &
+             nac_control_create, &
+             nac_control_release
 
 CONTAINS
 
@@ -770,6 +782,7 @@ CONTAINS
       NULLIFY (dft_control%qs_control)
       NULLIFY (dft_control%tddfpt_control)
       NULLIFY (dft_control%tddfpt2_control)
+      NULLIFY (dft_control%nac_control)
       NULLIFY (dft_control%efield_fields)
       NULLIFY (dft_control%period_efield)
       NULLIFY (dft_control%admm_control)
@@ -782,6 +795,7 @@ CONTAINS
       dft_control%apply_dmfet_pot = .FALSE.
       CALL qs_control_create(dft_control%qs_control)
       CALL tddfpt2_control_create(dft_control%tddfpt2_control)
+      CALL nac_control_create(dft_control%nac_control)
    END SUBROUTINE dft_control_create
 
 ! **************************************************************************************************
@@ -797,6 +811,7 @@ CONTAINS
       CALL qs_control_release(dft_control%qs_control)
       CALL tddfpt_control_release(dft_control%tddfpt_control)
       CALL tddfpt2_control_release(dft_control%tddfpt2_control)
+      CALL nac_control_release(dft_control%nac_control)
       IF (ASSOCIATED(dft_control%xas_control)) THEN
          CALL xas_control_release(dft_control%xas_control)
          DEALLOCATE (dft_control%xas_control)
@@ -960,6 +975,45 @@ CONTAINS
 
       CALL timestop(handle)
    END SUBROUTINE tddfpt2_control_release
+
+! **************************************************************************************************
+!> \brief ...
+!> \param nac_control ...
+! **************************************************************************************************
+   SUBROUTINE nac_control_create(nac_control)
+      TYPE(nac_control_type), POINTER                    :: nac_control
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'nac_control_create'
+
+      INTEGER                                            :: handle
+
+      CPASSERT(.NOT. ASSOCIATED(nac_control))
+      CALL timeset(routineN, handle)
+
+      ALLOCATE (nac_control)
+
+      CALL timestop(handle)
+   END SUBROUTINE nac_control_create
+
+! **************************************************************************************************
+!> \brief ...
+!> \param nac_control ...
+! **************************************************************************************************
+   SUBROUTINE nac_control_release(nac_control)
+      TYPE(nac_control_type), POINTER                    :: nac_control
+
+      CHARACTER(len=*), PARAMETER :: routineN = 'nac_control_release'
+
+      INTEGER                                            :: handle
+
+      CALL timeset(routineN, handle)
+
+      IF (ASSOCIATED(nac_control)) THEN
+         DEALLOCATE (nac_control)
+      END IF
+
+      CALL timestop(handle)
+   END SUBROUTINE nac_control_release
 
 ! **************************************************************************************************
 !> \brief ...
