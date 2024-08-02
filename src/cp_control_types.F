@@ -554,6 +554,7 @@ MODULE cp_control_types
    TYPE nac_control_type
       LOGICAL                              :: enabled = .FALSE.
       LOGICAL                              :: do_eigen = .FALSE.
+      LOGICAL                              :: with_tddfpt = .FALSE.
       INTEGER                              :: occ_active_space = 0
       INTEGER                              :: vir_active_space = 0
       REAL(kind=dp)                        :: dt = 0

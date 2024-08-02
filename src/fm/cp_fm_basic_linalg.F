@@ -66,7 +66,8 @@ MODULE cp_fm_basic_linalg
              cp_fm_rot_cols, & ! rotates two columns
              cp_fm_cholesky_restore, & ! apply Cholesky decomposition
              cp_fm_Gram_Schmidt_orthonorm, & ! Gram-Schmidt orthonormalization of columns of a full matrix, &
-             cp_fm_det ! determinant of a real matrix with correct sign
+             cp_fm_det, & ! determinant of a real matrix with correct sign
+             cp_fm_pow ! computes the reciprocal of a matrix
 
    REAL(KIND=dp), EXTERNAL :: dlange, pdlange, pdlatra
    REAL(KIND=sp), EXTERNAL :: slange, pslange, pslatra
@@ -2765,5 +2766,42 @@ CONTAINS
 #endif
 
    END SUBROUTINE cp_fm_cholesky_restore
+
+! **************************************************************************************************
+!> \brief ...
+!> \param matrix ...
+! **************************************************************************************************
+   SUBROUTINE cp_fm_pow(matrix, n)
+
+      TYPE(cp_fm_type), INTENT(IN)                       :: matrix
+      REAL(KIND=dp), INTENT(IN)                          :: n
+
+      CHARACTER(len=*), PARAMETER                        :: routineN = 'cp_fm_pow'
+
+      INTEGER                                            :: handle, icol_local, irow_local, mypcol, &
+                                                            myprow, ncol_local, nrow_local
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: a
+      TYPE(cp_blacs_env_type), POINTER                   :: context
+
+      CALL timeset(routineN, handle)
+
+      context => matrix%matrix_struct%context
+      myprow = context%mepos(1)
+      mypcol = context%mepos(2)
+
+      a => matrix%local_data
+
+      nrow_local = matrix%matrix_struct%nrow_locals(myprow)
+      ncol_local = matrix%matrix_struct%ncol_locals(mypcol)
+
+      DO icol_local = 1, ncol_local
+         DO irow_local = 1, nrow_local
+            a(irow_local, icol_local) = a(irow_local, icol_local)**n
+         END DO
+      END DO
+
+      CALL timestop(handle)
+
+   END SUBROUTINE cp_fm_pow
 
 END MODULE cp_fm_basic_linalg
