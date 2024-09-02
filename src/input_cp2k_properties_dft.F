@@ -2445,8 +2445,8 @@ CONTAINS
 
       NULLIFY (print_key)
       CALL cp_print_key_section_create(print_key, __LOCATION__, name="PRINT", &
-                                       description="Controls the behavior of printing NAC.", &
-                                       print_level=medium_print_level, filename="NAC")
+                                       description="Controls the behavior of printing NAC. Default unit is Hartree.", &
+                                       print_level=medium_print_level, filename="NAC", unit_str="hartree")
       CALL section_add_subsection(section, print_key)
       CALL section_release(print_key)
 

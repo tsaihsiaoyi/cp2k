@@ -17,14 +17,16 @@ MODULE qs_nac_methods
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale,&
                                               cp_fm_gemm,&
                                               cp_fm_pow,&
-                                              cp_fm_scale_and_add
+                                              cp_fm_scale_and_add,&
+                                              cp_fm_schur_product
    USE cp_fm_cholesky,                  ONLY: cp_fm_cholesky_decompose
    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
                                               cp_fm_struct_release,&
                                               cp_fm_struct_type
    USE cp_fm_types,                     ONLY: &
         cp_fm_create, cp_fm_get_diag, cp_fm_get_info, cp_fm_init_random, cp_fm_release, &
-        cp_fm_set_element, cp_fm_to_fm, cp_fm_type, cp_fm_write_formatted
+        cp_fm_set_all, cp_fm_set_element, cp_fm_set_submatrix, cp_fm_to_fm, cp_fm_to_fm_submat, &
+        cp_fm_type, cp_fm_write_formatted
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_type
    USE cp_output_handling,              ONLY: cp_print_key_finished_output,&
@@ -33,9 +35,11 @@ MODULE qs_nac_methods
    USE cp_units,                        ONLY: cp_unit_from_cp2k
    USE input_constants,                 ONLY: cholesky_restore
    USE input_section_types,             ONLY: section_vals_get_subs_vals,&
-                                              section_vals_type
+                                              section_vals_type,&
+                                              section_vals_val_get
    USE kinds,                           ONLY: dp
-   USE message_passing,                 ONLY: mp_para_env_type
+   USE message_passing,                 ONLY: mp_comm_type,&
+                                              mp_para_env_type
    USE qs_environment_types,            ONLY: get_qs_env,&
                                               qs_environment_type,&
                                               set_qs_env
@@ -71,7 +75,7 @@ CONTAINS
 
       INTEGER                                            :: handle, ispin
       LOGICAL                                            :: initial
-      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: nac_matrix
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: nac_matrix, nac_tddfpt_matrix
       TYPE(cp_logger_type), POINTER                      :: logger
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(mo_set_type), ALLOCATABLE, DIMENSION(:)       :: current_mo
@@ -107,7 +111,7 @@ CONTAINS
       END IF
 
       IF (.NOT. initial .AND. nac_control%dt .LT. 0) THEN
-         nac_control%dt = cp_unit_from_cp2k(qs_env%sim_time/qs_env%sim_step, "fs")
+         nac_control%dt = qs_env%sim_time/qs_env%sim_step
       END IF
 
       IF (nac_control%do_eigen) CALL nac_compute_mo(qs_env, current_mo)
@@ -115,8 +119,8 @@ CONTAINS
       IF (.NOT. initial) THEN
          CALL nac_compute(qs_env, nac_control, current_mo, nac_matrix)
          IF (nac_control%with_tddfpt) THEN
-            ! CALL nac_tddfpt_compute(qs_env, nac_control, current_mo, nac_matrix, nac_tddfpt_matrix)
-            ! CALL nac_output(print_section, nac_tddfpt_matrix)
+            CALL nac_tddfpt_compute(qs_env, nac_control, tddfpt_control, current_mo, nac_matrix, nac_tddfpt_matrix)
+            CALL nac_output(print_section, nac_tddfpt_matrix)
          ELSE
             CALL nac_output(print_section, nac_matrix)
          END IF
@@ -130,6 +134,12 @@ CONTAINS
             CALL cp_fm_release(nac_matrix(ispin))
          END DO
          DEALLOCATE (nac_matrix)
+         IF (nac_control%with_tddfpt) THEN
+            DO ispin = 1, SIZE(nac_tddfpt_matrix)
+               CALL cp_fm_release(nac_tddfpt_matrix(ispin))
+            END DO
+            DEALLOCATE (nac_tddfpt_matrix)
+         END IF
       END IF
 
       CALL timestop(handle)
@@ -416,12 +426,11 @@ CONTAINS
          CALL nac_get_smo(matrix_s(1)%matrix, current_mo_coeff, current_smo)
          CALL nac_compute_nac(current_smo, last_mo_coeff, nac_matrix_back)
          CALL nac_compute_nac(last_smo, current_mo_coeff, nac_matrix(ispin))
-         CALL cp_fm_scale_and_add(0.658218_dp/2.0_dp/nac_control%dt/13.60569253_dp, nac_matrix(ispin), &
-                                  -0.658218_dp/2.0_dp/nac_control%dt/13.60569253_dp, nac_matrix_back)
+         CALL cp_fm_scale_and_add(0.5_dp/nac_control%dt, nac_matrix(ispin), &
+                                  -0.5_dp/nac_control%dt, nac_matrix_back)
          DO imo = 1, SIZE(current_eigenvalues)
             CALL cp_fm_set_element(nac_matrix(ispin), imo, imo, &
-                                   (current_eigenvalues(imo) + last_eigenvalues(imo)) &
-                                   *27.2114_dp/2.0_dp/13.60569253_dp)
+                                   (current_eigenvalues(imo) + last_eigenvalues(imo))/2.0_dp)
          END DO
          CALL cp_fm_release(current_mo_coeff)
          CALL cp_fm_release(last_mo_coeff)
@@ -442,16 +451,19 @@ CONTAINS
 !> \param nac_control ...
 !> \param current_mo ...
 !> \param s_matrix ...
+!> \param nac_matrix ...
+!> \param sub_nac_matrix ...
 ! **************************************************************************************************
-   SUBROUTINE nac_tddfpt_compute_s(qs_env, nac_control, current_mo, s_matrix) ! To Be Done
+   SUBROUTINE nac_tddfpt_compute_s(qs_env, nac_control, current_mo, s_matrix, nac_matrix, sub_nac_matrix)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(nac_control_type), POINTER                    :: nac_control
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo
-      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: s_matrix
+      TYPE(mo_set_type), ALLOCATABLE, DIMENSION(:)       :: current_mo
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: s_matrix, nac_matrix, sub_nac_matrix
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nac_tddfpt_compute_s'
 
-      INTEGER                                            :: handle, ispin, occ, vir
+      INTEGER                                            :: handle, iocc, ispin, ivir, occ, vir
+      REAL(KIND=dp), ALLOCATABLE, DIMENSION(:, :)        :: eigenvalues
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env, context
       TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
       TYPE(mp_para_env_type), POINTER                    :: para_env
@@ -473,18 +485,37 @@ CONTAINS
          ELSE
             vir = nac_control%vir_active_space
          END IF
+         ALLOCATE (eigenvalues(1, current_mo(ispin)%nmo))
+         eigenvalues = RESHAPE(current_mo(ispin)%eigenvalues, (/1, current_mo(ispin)%nmo/))
          CALL cp_fm_struct_create(fm_struct_tmp, &
                                   context=blacs_env, &
                                   para_env=para_env, &
                                   nrow_global=occ, &
                                   ncol_global=vir)
          CALL cp_fm_create(s_matrix(ispin), fm_struct_tmp)
+         CALL cp_fm_create(sub_nac_matrix(ispin), fm_struct_tmp)
          CALL cp_fm_struct_release(fm_struct_tmp)
 
-         CALL cp_fm_init_random(s_matrix(ispin))
+         DO iocc = 1, occ
+            CALL cp_fm_set_submatrix(s_matrix(ispin), eigenvalues(:, occ + 1:), iocc, 1, 1, vir)
+         END DO
 
-         CALL cp_fm_pow(s_matrix(ispin), -1.0_dp)
+         DO ivir = 1, vir
+            CALL cp_fm_set_submatrix(s_matrix(ispin), eigenvalues(:, :occ), 1, ivir, occ, 1, -1.0_dp, 1.0_dp)
+         END DO
 
+         CALL cp_fm_pow(s_matrix(ispin), -0.5_dp)
+
+         CALL cp_fm_to_fm_submat(nac_matrix(ispin), &
+                                 sub_nac_matrix(ispin), &
+                                 occ, &
+                                 vir, &
+                                 1, &
+                                 occ + 1, &
+                                 1, &
+                                 1)
+
+         DEALLOCATE (eigenvalues)
       END DO
 
       CALL timestop(handle)
@@ -495,23 +526,73 @@ CONTAINS
 !> \brief ...
 !> \param qs_env ...
 !> \param nac_control ...
+!> \param tddfpt_control ...
 !> \param current_mo ...
 !> \param nac_matrix ...
 !> \param nac_tddfpt_matrix ...
 ! **************************************************************************************************
-   SUBROUTINE nac_tddfpt_compute(qs_env, nac_control, current_mo, nac_matrix, nac_tddfpt_matrix) ! To Be Done
+   SUBROUTINE nac_tddfpt_compute(qs_env, nac_control, tddfpt_control, current_mo, nac_matrix, nac_tddfpt_matrix)
       TYPE(qs_environment_type), POINTER                 :: qs_env
       TYPE(nac_control_type), POINTER                    :: nac_control
-      TYPE(mo_set_type), DIMENSION(:), POINTER           :: current_mo
+      TYPE(tddfpt2_control_type), POINTER                :: tddfpt_control
+      TYPE(mo_set_type), ALLOCATABLE, DIMENSION(:)       :: current_mo
       TYPE(cp_fm_type), DIMENSION(:), POINTER            :: nac_matrix, nac_tddfpt_matrix
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nac_tddfpt_compute'
 
-      INTEGER                                            :: handle
+      INTEGER                                            :: handle, ispin, istate
+      REAL(KIND=dp)                                      :: summary
+      REAL(KIND=dp), DIMENSION(:, :), POINTER            :: a, b
+      REAL(KIND=dp), EXTERNAL                            :: DDOT
+      TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
+      TYPE(cp_fm_struct_type), POINTER                   :: fm_struct_tmp
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: s_matrix, sub_nac_matrix
+      TYPE(mp_comm_type)                                 :: group
+      TYPE(mp_para_env_type), POINTER                    :: para_env
 
       CALL timeset(routineN, handle)
 
-      CPABORT("NAC with TDDFPT not implemented yet.")
+      ALLOCATE (nac_tddfpt_matrix(SIZE(nac_matrix)))
+
+      CALL get_qs_env(qs_env, &
+                      blacs_env=blacs_env, &
+                      para_env=para_env)
+      CALL cp_fm_struct_create(fm_struct_tmp, &
+                               context=blacs_env, &
+                               para_env=para_env, &
+                               nrow_global=tddfpt_control%nstates+1, &
+                               ncol_global=tddfpt_control%nstates+1)
+      DO ispin = 1, SIZE(nac_matrix)
+         CALL cp_fm_create(nac_tddfpt_matrix(ispin), fm_struct_tmp)
+         CALL cp_fm_set_all(nac_tddfpt_matrix(ispin), 0.0_dp)
+      END DO
+      CALL cp_fm_struct_release(fm_struct_tmp)
+
+      ALLOCATE (s_matrix(SIZE(nac_matrix)), sub_nac_matrix(SIZE(nac_matrix)))
+      CALL nac_tddfpt_compute_s(qs_env, nac_control, current_mo, s_matrix, nac_matrix, sub_nac_matrix)
+
+      DO ispin = 1, SIZE(nac_matrix)
+         CALL cp_fm_schur_product(s_matrix(ispin), nac_matrix(ispin), s_matrix(ispin))
+         DO istate = 1, tddfpt_control%nstates
+            summary = 0
+            a => s_matrix(ispin)%local_data
+            b => qs_env%tddfpt_evects(ispin, istate)%local_data
+            summary = DDOT(SIZE(a), a(1, 1), 1, b(1, 1), 1)
+            group = s_matrix(ispin)%matrix_struct%para_env
+            CALL group%sum(summary)
+            summary = summary*qs_env%tddfpt_evals(istate)**0.5_dp
+            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), 1, istate+1, summary)
+            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), istate+1, 1, -summary)
+            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), istate+1, istate+1, qs_env%tddfpt_evals(istate))
+            NULLIFY (a, b)
+         END DO
+      END DO
+
+      DO ispin = 1, SIZE(current_mo)
+         CALL cp_fm_release(s_matrix(ispin))
+         CALL cp_fm_release(sub_nac_matrix(ispin))
+      END DO
+      DEALLOCATE (s_matrix, sub_nac_matrix)
 
       CALL timestop(handle)
 
@@ -692,7 +773,7 @@ CONTAINS
 ! **************************************************************************************************
    SUBROUTINE nac_phase_correction(matrix_s, ref_mo, mo)
       TYPE(dbcsr_type), POINTER                          :: matrix_s
-      TYPE(mo_set_type)                                  :: mo, ref_mo
+      TYPE(mo_set_type)                                  :: ref_mo, mo
 
       CHARACTER(LEN=*), PARAMETER :: routineN = 'nac_phase_correction'
 
@@ -742,14 +823,15 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param print_section ...
-!> \param mos ...
+!> \param matrix ...
 ! **************************************************************************************************
-   SUBROUTINE nac_output(print_section, mos)
+   SUBROUTINE nac_output(print_section, matrix)
       TYPE(section_vals_type), POINTER                   :: print_section
-      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: mos
+      TYPE(cp_fm_type), DIMENSION(:), POINTER            :: matrix
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'nac_output'
 
+      CHARACTER(LEN=256)                                 :: unit_str
       INTEGER                                            :: handle, ispin, unit
       TYPE(cp_logger_type), POINTER                      :: logger
 
@@ -759,9 +841,13 @@ CONTAINS
       logger => cp_get_default_logger()
 
       IF (cp_print_key_should_output(logger%iter_info, print_section) /= 0) THEN
+
+         CALL section_vals_val_get(print_section, "UNIT", c_val=unit_str)
+
          unit = cp_print_key_unit_nr(logger, print_section, extension=".nacLog", file_status="REPLACE")
-         DO ispin = 1, SIZE(mos)
-            CALL cp_fm_write_formatted(mos(ispin), unit)
+         DO ispin = 1, SIZE(matrix)
+            CALL cp_fm_scale_and_add(cp_unit_from_cp2k(1.0_dp, TRIM(unit_str)), matrix(ispin))
+            CALL cp_fm_write_formatted(matrix(ispin), unit)
          END DO
          CALL cp_print_key_finished_output(unit, logger, print_section)
       END IF

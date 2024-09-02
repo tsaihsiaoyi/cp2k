@@ -84,6 +84,7 @@ MODULE qs_tddfpt2_methods
                                               tddfpt_print_nto_analysis,&
                                               tddfpt_print_summary
    USE qs_tddfpt2_restart,              ONLY: tddfpt_read_restart,&
+                                              tddfpt_save_evects,&
                                               tddfpt_write_newtonx_output,&
                                               tddfpt_write_restart
    USE qs_tddfpt2_soc,                  ONLY: tddfpt_soc
@@ -893,6 +894,7 @@ CONTAINS
       TYPE(admm_type), POINTER                           :: admm_env
       TYPE(cp_blacs_env_type), POINTER                   :: blacs_env
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_ks_oep
+      TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(section_vals_type), POINTER                   :: lri_section, namd_print_section, &
                                                             soc_section
 
@@ -1138,6 +1140,8 @@ CONTAINS
                                           S_evects, &
                                           sub_env)
       END IF
+      CALL get_qs_env(qs_env, dft_control=dft_control)
+      IF (dft_control%nac_control%enabled) CALL tddfpt_save_evects(qs_env, sub_env, gs_mos, S_evects, evals)
       ALLOCATE (ostrength(nstates))
       ostrength = 0.0_dp
       CALL tddfpt_print_summary(log_unit, &

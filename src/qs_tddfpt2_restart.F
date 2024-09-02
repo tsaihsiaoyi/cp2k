@@ -40,6 +40,7 @@ MODULE qs_tddfpt2_restart
                                               dp
    USE message_passing,                 ONLY: mp_para_env_type
    USE parallel_gemm_api,               ONLY: parallel_gemm
+   USE qs_environment_types,            ONLY: qs_environment_type
    USE qs_tddfpt2_subgroups,            ONLY: tddfpt_subgroup_env_type
    USE qs_tddfpt2_types,                ONLY: tddfpt_ground_state_mos
    USE string_utilities,                ONLY: integer_to_string
@@ -56,7 +57,7 @@ MODULE qs_tddfpt2_restart
    INTEGER, PARAMETER, PRIVATE          :: nderivs = 3
    INTEGER, PARAMETER, PRIVATE          :: maxspins = 2
 
-   PUBLIC :: tddfpt_write_restart, tddfpt_read_restart, tddfpt_write_newtonx_output, tddfpt_check_orthonormality
+   PUBLIC :: tddfpt_write_restart, tddfpt_read_restart, tddfpt_write_newtonx_output, tddfpt_check_orthonormality, tddfpt_save_evects
 
 ! **************************************************************************************************
 
@@ -663,5 +664,63 @@ CONTAINS
       CALL timestop(handle)
 
    END SUBROUTINE compute_phase_eigenvectors
+
+! **************************************************************************************************
+!> \brief ...
+!> \param qs_env ...
+!> \param sub_env ...
+!> \param gs_mos ...
+!> \param S_evects ...
+!> \param evals ...
+! **************************************************************************************************
+   SUBROUTINE tddfpt_save_evects(qs_env, sub_env, gs_mos, S_evects, evals)
+
+      TYPE(qs_environment_type), POINTER                 :: qs_env
+      TYPE(tddfpt_subgroup_env_type)                     :: sub_env
+      TYPE(tddfpt_ground_state_mos), DIMENSION(:)        :: gs_mos
+      TYPE(cp_fm_type), DIMENSION(:, :)                  :: S_evects
+      REAL(kind=dp), DIMENSION(:)                        :: evals
+
+      INTEGER                                            :: ispin, istate, nao, nspins, nstates
+      TYPE(cp_fm_struct_type), POINTER                   :: fmstruct
+
+      nspins = SIZE(S_evects, 1)
+      nstates = SIZE(S_evects, 2)
+      CALL cp_fm_get_info(gs_mos(1)%mos_occ, nrow_global=nao)
+
+      IF (.NOT. ASSOCIATED(qs_env%tddfpt_evects)) THEN
+         ALLOCATE (qs_env%tddfpt_evects(nspins, nstates))
+         DO istate = 1, nstates
+            DO ispin = 1, nspins
+               NULLIFY (fmstruct)
+               CALL cp_fm_struct_create(fmstruct, para_env=sub_env%para_env, &
+                                        context=sub_env%blacs_env, &
+                                        nrow_global=SIZE(gs_mos(ispin)%evals_occ), &
+                                        ncol_global=SIZE(gs_mos(ispin)%evals_virt))
+               CALL cp_fm_create(qs_env%tddfpt_evects(ispin, istate), fmstruct)
+               CALL cp_fm_struct_release(fmstruct)
+            END DO
+         END DO
+      END IF
+      IF (.NOT. ASSOCIATED(qs_env%tddfpt_evals)) THEN
+         ALLOCATE (qs_env%tddfpt_evals(nstates))
+      END IF
+
+      DO istate = 1, nstates
+         DO ispin = 1, nspins
+            CALL parallel_gemm("T", "N", &
+                               SIZE(gs_mos(ispin)%evals_occ), &
+                               SIZE(gs_mos(ispin)%evals_virt), &
+                               nao, &
+                               1.0_dp, &
+                               S_evects(ispin, istate), &
+                               gs_mos(ispin)%mos_virt, &
+                               0.0_dp, &
+                               qs_env%tddfpt_evects(ispin, istate))
+         END DO
+      END DO
+      qs_env%tddfpt_evals = evals
+
+   END SUBROUTINE tddfpt_save_evects
 
 END MODULE qs_tddfpt2_restart
