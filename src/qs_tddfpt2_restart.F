@@ -12,6 +12,7 @@ MODULE qs_tddfpt2_restart
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_fm_basic_linalg,              ONLY: cp_fm_column_scale,&
+                                              cp_fm_row_scale,&
                                               cp_fm_scale_and_add,&
                                               cp_fm_trace
    USE cp_fm_pool_types,                ONLY: cp_fm_pool_p_type,&
@@ -717,6 +718,7 @@ CONTAINS
                                gs_mos(ispin)%mos_virt, &
                                0.0_dp, &
                                qs_env%tddfpt_evects(ispin, istate))
+            CALL cp_fm_row_scale(qs_env%tddfpt_evects(ispin, istate), gs_mos(ispin)%phases_occ)
          END DO
       END DO
       qs_env%tddfpt_evals = evals
