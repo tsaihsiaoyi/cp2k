@@ -572,7 +572,7 @@ CONTAINS
       CALL nac_tddfpt_compute_s(qs_env, nac_control, current_mo, s_matrix, nac_matrix, sub_nac_matrix)
 
       DO ispin = 1, SIZE(nac_matrix)
-         CALL cp_fm_schur_product(s_matrix(ispin), nac_matrix(ispin), s_matrix(ispin))
+         CALL cp_fm_schur_product(s_matrix(ispin), sub_nac_matrix(ispin), s_matrix(ispin))
          DO istate = 1, tddfpt_control%nstates
             summary = 0
             a => s_matrix(ispin)%local_data
