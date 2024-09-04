@@ -126,7 +126,7 @@ CONTAINS
          END IF
       END IF
 
-      IF (initial) CALL nac_save_ref_mo(qs_env, current_mo)
+      IF (initial .OR. MOD(qs_env%sim_step,10) .EQ. 0) CALL nac_save_ref_mo(qs_env, current_mo)
       IF (nac_control%do_eigen) CALL nac_save_last_mo(qs_env, current_mo)
 
       IF (.NOT. initial) THEN
@@ -408,6 +408,8 @@ CONTAINS
 
       DO ispin = 1, SIZE(last_mo)
          ALLOCATE (nac_matrix_back, last_mo_coeff, current_mo_coeff, current_smo, last_smo)
+         CALL nac_phase_correction(matrix_s(1)%matrix, ref_mo(ispin), last_mo(ispin))
+         CALL nac_phase_correction(matrix_s(1)%matrix, ref_mo(ispin), current_mo(ispin))
          CALL nac_get_active_space(qs_env, &
                                    last_mo(ispin), &
                                    nac_control%occ_active_space, &
@@ -420,8 +422,6 @@ CONTAINS
                                    nac_control%vir_active_space, &
                                    current_mo_coeff, &
                                    current_eigenvalues)
-         CALL nac_phase_correction(matrix_s(1)%matrix, ref_mo(ispin), last_mo(ispin))
-         CALL nac_phase_correction(matrix_s(1)%matrix, ref_mo(ispin), current_mo(ispin))
          CALL nac_get_smo(matrix_s(1)%matrix, last_mo_coeff, last_smo)
          CALL nac_get_smo(matrix_s(1)%matrix, current_mo_coeff, current_smo)
          CALL nac_compute_nac(current_smo, last_mo_coeff, nac_matrix_back)
