@@ -126,7 +126,7 @@ CONTAINS
          END IF
       END IF
 
-      IF (initial .OR. MOD(qs_env%sim_step,10) .EQ. 0) CALL nac_save_ref_mo(qs_env, current_mo)
+      IF (initial .OR. MOD(qs_env%sim_step, 10) .EQ. 0) CALL nac_save_ref_mo(qs_env, current_mo)
       IF (nac_control%do_eigen) CALL nac_save_last_mo(qs_env, current_mo)
 
       IF (.NOT. initial) THEN
@@ -392,7 +392,7 @@ CONTAINS
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: current_eigenvalues, last_eigenvalues
       TYPE(cp_fm_type), POINTER                          :: current_mo_coeff, current_smo, &
                                                             last_mo_coeff, last_smo, &
-                                                            nac_matrix_back
+                                                            nac_matrix_back, nac_matrix_mid
       TYPE(dbcsr_p_type), DIMENSION(:), POINTER          :: matrix_s
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: last_mo, ref_mo
 
@@ -407,7 +407,7 @@ CONTAINS
       ALLOCATE (nac_matrix(SIZE(last_mo)))
 
       DO ispin = 1, SIZE(last_mo)
-         ALLOCATE (nac_matrix_back, last_mo_coeff, current_mo_coeff, current_smo, last_smo)
+         ALLOCATE (nac_matrix_back, nac_matrix_mid, last_mo_coeff, current_mo_coeff, current_smo, last_smo)
          CALL nac_phase_correction(matrix_s(1)%matrix, ref_mo(ispin), last_mo(ispin))
          CALL nac_phase_correction(matrix_s(1)%matrix, ref_mo(ispin), current_mo(ispin))
          CALL nac_get_active_space(qs_env, &
@@ -425,7 +425,10 @@ CONTAINS
          CALL nac_get_smo(matrix_s(1)%matrix, last_mo_coeff, last_smo)
          CALL nac_get_smo(matrix_s(1)%matrix, current_mo_coeff, current_smo)
          CALL nac_compute_nac(current_smo, last_mo_coeff, nac_matrix_back)
+         CALL nac_compute_nac(last_smo, last_mo_coeff, nac_matrix_mid)
          CALL nac_compute_nac(last_smo, current_mo_coeff, nac_matrix(ispin))
+         CALL cp_fm_scale_and_add(1.0_dp, nac_matrix(ispin), &
+                                  -1.0_dp, nac_matrix_mid)
          CALL cp_fm_scale_and_add(0.5_dp/nac_control%dt, nac_matrix(ispin), &
                                   -0.5_dp/nac_control%dt, nac_matrix_back)
          DO imo = 1, SIZE(current_eigenvalues)
@@ -437,8 +440,9 @@ CONTAINS
          CALL cp_fm_release(current_smo)
          CALL cp_fm_release(last_smo)
          CALL cp_fm_release(nac_matrix_back)
-         DEALLOCATE (nac_matrix_back, current_mo_coeff, last_mo_coeff, current_smo, &
-                     last_smo, current_eigenvalues, last_eigenvalues)
+         CALL cp_fm_release(nac_matrix_mid)
+         DEALLOCATE (nac_matrix_back, nac_matrix_mid, current_mo_coeff, last_mo_coeff, &
+                     current_smo, last_smo, current_eigenvalues, last_eigenvalues)
       END DO
 
       CALL timestop(handle)
@@ -560,8 +564,8 @@ CONTAINS
       CALL cp_fm_struct_create(fm_struct_tmp, &
                                context=blacs_env, &
                                para_env=para_env, &
-                               nrow_global=tddfpt_control%nstates+1, &
-                               ncol_global=tddfpt_control%nstates+1)
+                               nrow_global=tddfpt_control%nstates + 1, &
+                               ncol_global=tddfpt_control%nstates + 1)
       DO ispin = 1, SIZE(nac_matrix)
          CALL cp_fm_create(nac_tddfpt_matrix(ispin), fm_struct_tmp)
          CALL cp_fm_set_all(nac_tddfpt_matrix(ispin), 0.0_dp)
@@ -581,9 +585,9 @@ CONTAINS
             group = s_matrix(ispin)%matrix_struct%para_env
             CALL group%sum(summary)
             summary = summary*qs_env%tddfpt_evals(istate)**0.5_dp
-            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), 1, istate+1, summary)
-            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), istate+1, 1, -summary)
-            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), istate+1, istate+1, qs_env%tddfpt_evals(istate))
+            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), 1, istate + 1, summary)
+            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), istate + 1, 1, -summary)
+            CALL cp_fm_set_element(nac_tddfpt_matrix(ispin), istate + 1, istate + 1, qs_env%tddfpt_evals(istate))
             NULLIFY (a, b)
          END DO
       END DO
