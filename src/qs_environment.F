@@ -43,9 +43,9 @@ MODULE qs_environment
                                               semi_empirical_control_type,&
                                               xtb_control_type
    USE cp_control_utils,                ONLY: &
-        read_ddapc_section, read_dft_control, read_mgrid_section, read_qs_section, &
-        read_tddfpt2_control, read_tddfpt_control, write_admm_control, write_dft_control, &
-        write_qs_control
+        read_ddapc_section, read_dft_control, read_mgrid_section, read_nac_control, &
+        read_qs_section, read_tddfpt2_control, read_tddfpt_control, write_admm_control, &
+        write_dft_control, write_qs_control
    USE cp_ddapc_types,                  ONLY: cp_ddapc_ewald_create
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
                                               cp_logger_get_default_io_unit,&
@@ -644,8 +644,9 @@ CONTAINS
       TYPE(scf_control_type), POINTER                    :: scf_control
       TYPE(se_taper_type), POINTER                       :: se_taper
       TYPE(section_vals_type), POINTER :: dft_section, et_coupling_section, et_ddapc_section, &
-         ewald_section, harris_section, lri_section, mp2_section, nl_section, poisson_section, &
-         pp_section, print_section, qs_section, se_section, tddfpt_section, xc_section, xtb_section
+         ewald_section, harris_section, lri_section, mp2_section, nac_section, nl_section, &
+         poisson_section, pp_section, print_section, qs_section, se_section, tddfpt_section, &
+         xc_section, xtb_section
       TYPE(semi_empirical_control_type), POINTER         :: se_control
       TYPE(semi_empirical_si_type), POINTER              :: se_store_int_env
       TYPE(xtb_control_type), POINTER                    :: xtb_control
@@ -677,6 +678,7 @@ CONTAINS
       et_coupling_section => section_vals_get_subs_vals(qs_env%input, "PROPERTIES%ET_COUPLING")
       ! reimplemented TDDFPT
       tddfpt_section => section_vals_get_subs_vals(qs_env%input, "PROPERTIES%TDDFPT")
+      nac_section => section_vals_get_subs_vals(qs_env%input, "PROPERTIES%NAC")
 
       CALL qs_subsys_get(subsys, particle_set=particle_set, &
                          qs_kind_set=qs_kind_set, &
@@ -743,6 +745,7 @@ CONTAINS
       ! reimplemented TDDFPT
       CALL read_tddfpt2_control(dft_control%tddfpt2_control, tddfpt_section, dft_control%qs_control)
 
+      CALL read_nac_control(dft_control%nac_control, nac_section)
       !   Create relativistic control section
       BLOCK
          TYPE(rel_control_type), POINTER :: rel_control

@@ -313,6 +313,9 @@ MODULE qs_environment_types
       REAL(KIND=dp)                                         :: total_zeff_corr = -1.0_dp, surface_dipole_moment = -1.0_dp
       LOGICAL                                               :: surface_dipole_switch_off = .FALSE.
       TYPE(mo_set_type), DIMENSION(:), POINTER              :: mos_last_converged => NULL()
+      TYPE(mo_set_type), DIMENSION(:), POINTER              :: last_mo, ref_mo
+      TYPE(cp_fm_type), DIMENSION(:,:), POINTER             :: tddfpt_evects
+      REAL(KIND=dp), DIMENSION(:), POINTER                  :: tddfpt_evals
    END TYPE qs_environment_type
 
 CONTAINS
@@ -475,6 +478,8 @@ CONTAINS
 !> \param polar_env ...
 !> \param mos_last_converged ... [SGh]
 !> \param rhs ...
+!> \param last_mo ...
+!> \param ref_mo ...
 !> \date    23.01.2002
 !> \author  MK
 !> \version 1.0
@@ -504,7 +509,8 @@ CONTAINS
                          rho_external, external_vxc, mask, mp2_env, bs_env, kg_env, &
                          WannierCentres, atprop, ls_scf_env, do_transport, transport_env, v_hartree_rspace, &
                          s_mstruct_changed, rho_changed, potential_changed, forces_up_to_date, mscfg_env, almo_scf_env, &
-                         gradient_history, variable_history, embed_pot, spin_embed_pot, polar_env, mos_last_converged, rhs)
+                         gradient_history, variable_history, embed_pot, spin_embed_pot, polar_env, mos_last_converged, rhs, &
+                         last_mo, ref_mo, tddfpt_evects, tddfpt_evals)
       TYPE(qs_environment_type), INTENT(IN)              :: qs_env
       TYPE(atomic_kind_type), DIMENSION(:), OPTIONAL, &
          POINTER                                         :: atomic_kind_set
@@ -638,6 +644,9 @@ CONTAINS
       TYPE(polar_env_type), OPTIONAL, POINTER            :: polar_env
       TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: mos_last_converged
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: rhs
+      TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: last_mo, ref_mo
+      TYPE(cp_fm_type), DIMENSION(:,:), OPTIONAL, POINTER:: tddfpt_evects
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: tddfpt_evals
 
       TYPE(rho0_mpole_type), POINTER                     :: rho0_m
 
@@ -741,7 +750,10 @@ CONTAINS
       IF (PRESENT(dftb_potential)) dftb_potential => qs_env%dftb_potential
       IF (PRESENT(efield)) efield => qs_env%efield
       IF (PRESENT(WannierCentres)) WannierCentres => qs_env%WannierCentres
-
+      IF (PRESENT(last_mo)) last_mo => qs_env%last_mo
+      IF (PRESENT(ref_mo)) ref_mo => qs_env%ref_mo
+      IF (PRESENT(tddfpt_evects)) tddfpt_evects => qs_env%tddfpt_evects
+      IF (PRESENT(tddfpt_evals)) tddfpt_evals => qs_env%tddfpt_evals
       CALL get_ks_env(qs_env%ks_env, &
                       v_hartree_rspace=v_hartree_rspace, &
                       s_mstruct_changed=s_mstruct_changed, &
@@ -905,6 +917,10 @@ CONTAINS
       NULLIFY (qs_env%bs_env)
       NULLIFY (qs_env%kg_env)
       NULLIFY (qs_env%WannierCentres)
+      NULLIFY (qs_env%last_mo)
+      NULLIFY (qs_env%ref_mo)
+      NULLIFY (qs_env%tddfpt_evects)
+      NULLIFY (qs_env%tddfpt_evals)
 
       qs_env%outer_scf_ihistory = 0
       qs_env%broyden_adaptive_sigma = -1.0_dp
@@ -1021,6 +1037,8 @@ CONTAINS
 !> \param polar_env ...
 !> \param mos_last_converged ... [SGh]
 !> \param rhs ...
+!> \param last_mo ...
+!> \param ref_mo ...
 !> \date    23.01.2002
 !> \author  MK
 !> \version 1.0
@@ -1040,7 +1058,7 @@ CONTAINS
                          do_transport, transport_env, lri_env, lri_density, exstate_env, ec_env, dispersion_env, &
                          harris_env, gcp_env, mp2_env, bs_env, kg_env, force, &
                          kpoints, WannierCentres, almo_scf_env, gradient_history, variable_history, embed_pot, &
-                         spin_embed_pot, polar_env, mos_last_converged, rhs)
+                         spin_embed_pot, polar_env, mos_last_converged, rhs, last_mo, ref_mo, tddfpt_evects, tddfpt_evals)
 
       TYPE(qs_environment_type), INTENT(INOUT)           :: qs_env
       TYPE(cell_type), OPTIONAL, POINTER                 :: super_cell
@@ -1117,6 +1135,9 @@ CONTAINS
       TYPE(polar_env_type), OPTIONAL, POINTER            :: polar_env
       TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: mos_last_converged
       REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: rhs
+      TYPE(mo_set_type), DIMENSION(:), OPTIONAL, POINTER :: last_mo, ref_mo
+      TYPE(cp_fm_type), DIMENSION(:,:), OPTIONAL, POINTER:: tddfpt_evects
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: tddfpt_evals
 
       TYPE(qs_subsys_type), POINTER                      :: subsys
 
@@ -1152,6 +1173,10 @@ CONTAINS
       IF (PRESENT(rtp)) qs_env%rtp => rtp
       IF (PRESENT(efield)) qs_env%efield => efield
       IF (PRESENT(active_space)) qs_env%active_space => active_space
+      IF (PRESENT(last_mo)) qs_env%last_mo => last_mo
+      IF (PRESENT(ref_mo)) qs_env%ref_mo => ref_mo
+      IF (PRESENT(tddfpt_evects)) qs_env%tddfpt_evects => tddfpt_evects
+      IF (PRESENT(tddfpt_evals)) qs_env%tddfpt_evals => tddfpt_evals
 
       IF (PRESENT(ewald_env)) THEN ! accept also null pointers?
          IF (ASSOCIATED(qs_env%ewald_env)) THEN
@@ -1596,6 +1621,23 @@ CONTAINS
       END IF
       ! Resp charges
       IF (ASSOCIATED(qs_env%rhs)) DEALLOCATE (qs_env%rhs)
+
+      IF (ASSOCIATED(qs_env%last_mo)) THEN
+         DO i = 1, SIZE(qs_env%last_mo)
+            CALL deallocate_mo_set(qs_env%last_mo(i))
+         END DO
+         DEALLOCATE (qs_env%last_mo)
+      END IF
+
+      IF (ASSOCIATED(qs_env%ref_mo)) THEN
+         DO i = 1, SIZE(qs_env%ref_mo)
+            CALL deallocate_mo_set(qs_env%ref_mo(i))
+         END DO
+         DEALLOCATE (qs_env%ref_mo)
+      END IF
+
+      IF (ASSOCIATED(qs_env%tddfpt_evects)) CALL cp_fm_release(qs_env%tddfpt_evects)
+      IF (ASSOCIATED(qs_env%tddfpt_evals)) DEALLOCATE (qs_env%tddfpt_evects)
 
    END SUBROUTINE qs_env_release
 

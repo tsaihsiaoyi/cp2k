@@ -17,8 +17,8 @@ MODULE cp_control_utils
    USE cp_control_types,                ONLY: &
         admm_control_create, admm_control_type, ddapc_control_create, ddapc_restraint_type, &
         dft_control_create, dft_control_type, efield_type, expot_control_create, &
-        maxwell_control_create, qs_control_type, tddfpt2_control_type, tddfpt_control_create, &
-        tddfpt_control_type, xtb_control_type
+        maxwell_control_create, nac_control_type, qs_control_type, tddfpt2_control_type, &
+        tddfpt_control_create, tddfpt_control_type, xtb_control_type
    USE cp_files,                        ONLY: close_file,&
                                               open_file
    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
@@ -89,7 +89,8 @@ MODULE cp_control_utils
              write_dft_control, &
              write_qs_control, &
              write_admm_control, &
-             read_ddapc_section
+             read_ddapc_section, &
+             read_nac_control
 CONTAINS
 
 ! **************************************************************************************************
@@ -1562,6 +1563,28 @@ CONTAINS
 
       CALL timestop(handle)
    END SUBROUTINE read_tddfpt2_control
+
+! **************************************************************************************************
+!> \brief ...
+!> \param nac_control ...
+!> \param nac_section ...
+! **************************************************************************************************
+   SUBROUTINE read_nac_control(nac_control, nac_section)
+      TYPE(nac_control_type), POINTER                    :: nac_control
+      TYPE(section_vals_type), POINTER                   :: nac_section
+
+      CHARACTER(LEN=*), PARAMETER                        :: routineN = 'read_nac_control'
+
+      INTEGER                                            :: handle
+
+      CALL timeset(routineN, handle)
+
+      CALL section_vals_val_get(nac_section, "_SECTION_PARAMETERS_", l_val=nac_control%enabled)
+      CALL section_vals_val_get(nac_section, "ACTIVE_SPACE%OCC", i_val=nac_control%occ_active_space)
+      CALL section_vals_val_get(nac_section, "ACTIVE_SPACE%VIR", i_val=nac_control%vir_active_space)
+
+      CALL timestop(handle)
+   END SUBROUTINE read_nac_control
 
 ! **************************************************************************************************
 !> \brief Write the DFT control parameters to the output unit.
