@@ -123,13 +123,13 @@ MODULE qs_kind_types
 !> \brief Input parameters for the DFT+U method
 ! **************************************************************************************************
    TYPE dft_plus_u_type
-      INTEGER                                :: l = -1
+      INTEGER, DIMENSION(:), POINTER         :: l => Null()
       INTEGER                                :: n = -1
       INTEGER                                :: max_scf = -1
       REAL(KIND=dp)                          :: eps_u_ramping = 0.0_dp
       REAL(KIND=dp)                          :: eps_scf = HUGE(0.0_dp)
-      REAL(KIND=dp)                          :: u_minus_j_target = 0.0_dp
-      REAL(KIND=dp)                          :: u_minus_j = 0.0_dp
+      REAL(KIND=dp), DIMENSION(:), POINTER   :: u_minus_j_target => Null()
+      REAL(KIND=dp), DIMENSION(:), POINTER   :: u_minus_j => Null()
       REAL(KIND=dp)                          :: u_ramping = 0.0_dp
       REAL(KIND=dp)                          :: U = 0.0_dp
       REAL(KIND=dp)                          :: J = 0.0_dp
@@ -477,9 +477,11 @@ CONTAINS
       TYPE(grid_atom_type), OPTIONAL, POINTER            :: grid_atom
       INTEGER, INTENT(OUT), OPTIONAL                     :: ngrid_ang, ngrid_rad, lmax_rho0
       LOGICAL, INTENT(OUT), OPTIONAL                     :: dft_plus_u_atom
-      INTEGER, INTENT(OUT), OPTIONAL                     :: l_of_dft_plus_u, n_of_dft_plus_u
-      REAL(KIND=dp), INTENT(OUT), OPTIONAL :: u_minus_j, U_of_dft_plus_u, J_of_dft_plus_u, &
+      INTEGER, INTENT(OUT), OPTIONAL                     :: n_of_dft_plus_u
+      INTEGER, DIMENSION(:), OPTIONAL, POINTER           :: l_of_dft_plus_u
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL :: U_of_dft_plus_u, J_of_dft_plus_u, &
          alpha_of_dft_plus_u, beta_of_dft_plus_u, J0_of_dft_plus_u, occupation_of_dft_plus_u
+      REAL(KIND=dp), DIMENSION(:), OPTIONAL, POINTER     :: u_minus_j, u_minus_j_target
       TYPE(qs_atom_dispersion_type), OPTIONAL, POINTER   :: dispersion
       LOGICAL, INTENT(OUT), OPTIONAL                     :: bs_occupation
       REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: magnetization
@@ -489,8 +491,7 @@ CONTAINS
       INTEGER, OPTIONAL                                  :: max_scf
       REAL(KIND=dp), OPTIONAL                            :: eps_scf
       LOGICAL, OPTIONAL                                  :: smear
-      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: u_ramping, u_minus_j_target, &
-                                                            eps_u_ramping
+      REAL(KIND=dp), INTENT(OUT), OPTIONAL               :: u_ramping, eps_u_ramping
       LOGICAL, OPTIONAL                                  :: init_u_ramping_each_scf
       REAL(KIND=dp), DIMENSION(:, :), OPTIONAL, POINTER  :: reltmat
       LOGICAL, OPTIONAL                                  :: ghost, floating
@@ -668,9 +669,10 @@ CONTAINS
       IF (PRESENT(dft_plus_u_atom)) dft_plus_u_atom = ASSOCIATED(qs_kind%dft_plus_u)
       IF (PRESENT(l_of_dft_plus_u)) THEN
          IF (ASSOCIATED(qs_kind%dft_plus_u)) THEN
-            l_of_dft_plus_u = qs_kind%dft_plus_u%l
-         ELSE
-            l_of_dft_plus_u = -1
+            IF (ASSOCIATED(qs_kind%dft_plus_u%l)) THEN
+               NULLIFY (l_of_dft_plus_u)
+               l_of_dft_plus_u => qs_kind%dft_plus_u%l
+            END IF
          END IF
       END IF
       IF (PRESENT(n_of_dft_plus_u)) THEN
@@ -682,16 +684,18 @@ CONTAINS
       END IF
       IF (PRESENT(u_minus_j)) THEN
          IF (ASSOCIATED(qs_kind%dft_plus_u)) THEN
-            u_minus_j = qs_kind%dft_plus_u%u_minus_j
-         ELSE
-            u_minus_j = 0.0_dp
+            NULLIFY (u_minus_j)
+            IF (ASSOCIATED(qs_kind%dft_plus_u%u_minus_j)) THEN
+               u_minus_j => qs_kind%dft_plus_u%u_minus_j
+            END IF
          END IF
       END IF
       IF (PRESENT(u_minus_j_target)) THEN
          IF (ASSOCIATED(qs_kind%dft_plus_u)) THEN
-            u_minus_j_target = qs_kind%dft_plus_u%u_minus_j_target
-         ELSE
-            u_minus_j_target = 0.0_dp
+            NULLIFY (u_minus_j_target)
+            IF (ASSOCIATED(qs_kind%dft_plus_u%u_minus_j_target)) THEN
+               u_minus_j_target => qs_kind%dft_plus_u%u_minus_j_target
+            END IF
          END IF
       END IF
       IF (PRESENT(U_of_dft_plus_u)) THEN
@@ -1904,12 +1908,14 @@ CONTAINS
                                    l_val=section_enabled)
          IF (section_enabled) THEN
             ALLOCATE (qs_kind%dft_plus_u)
+            NULLIFY (qs_kind%dft_plus_u%l)
+            NULLIFY (qs_kind%dft_plus_u%u_minus_j)
+            NULLIFY (qs_kind%dft_plus_u%u_minus_j_target)
             NULLIFY (qs_kind%dft_plus_u%nelec)
             NULLIFY (qs_kind%dft_plus_u%orbitals)
             CALL section_vals_val_get(dft_plus_u_section, &
                                       keyword_name="L", &
-                                      i_val=l)
-            qs_kind%dft_plus_u%l = l
+                                      i_vals=qs_kind%dft_plus_u%l)
 #if defined(__SIRIUS)
             CALL section_vals_val_get(dft_plus_u_section, &
                                       keyword_name="N", &
@@ -1947,7 +1953,7 @@ CONTAINS
 
             CALL section_vals_val_get(dft_plus_u_section, &
                                       keyword_name="U_MINUS_J", &
-                                      r_val=qs_kind%dft_plus_u%u_minus_j_target, &
+                                      r_vals=qs_kind%dft_plus_u%u_minus_j_target, &
                                       explicit=explicit_u_m_j)
 
             IF ((explicit_U .OR. explicit_J) .AND. explicit_u_m_j) THEN
@@ -1960,6 +1966,8 @@ CONTAINS
             CALL section_vals_val_get(dft_plus_u_section, &
                                       keyword_name="INIT_U_RAMPING_EACH_SCF", &
                                       l_val=qs_kind%dft_plus_u%init_u_ramping_each_scf)
+            CPASSERT(SIZE(qs_kind%dft_plus_u%l) == SIZE(qs_kind%dft_plus_u%u_minus_j_target))
+            ALLOCATE (qs_kind%dft_plus_u%u_minus_j(SIZE(qs_kind%dft_plus_u%u_minus_j_target)))
             IF (qs_kind%dft_plus_u%u_ramping > 0.0_dp) THEN
                qs_kind%dft_plus_u%u_minus_j = 0.0_dp
             ELSE
@@ -1976,7 +1984,10 @@ CONTAINS
             CALL section_vals_val_get(enforce_occupation_section, &
                                       keyword_name="_SECTION_PARAMETERS_", &
                                       l_val=subsection_enabled)
+            IF (SIZE(qs_kind%dft_plus_u%l) > 1 .AND. subsection_enabled) &
+            CPABORT("DFT+U| ENFORCE_OCCUPATION section is not allowed for multiple L values for now")
             IF (subsection_enabled) THEN
+               l = qs_kind%dft_plus_u%l(1)
                NULLIFY (nelec)
                CALL section_vals_val_get(enforce_occupation_section, &
                                          keyword_name="NELEC", &
@@ -2871,7 +2882,7 @@ CONTAINS
 
       CHARACTER(LEN=3)                                   :: yon
       CHARACTER(LEN=default_string_length)               :: basis_type, bstring
-      INTEGER                                            :: ibas
+      INTEGER                                            :: ibas, il
       LOGICAL                                            :: do_print
       TYPE(gto_basis_set_type), POINTER                  :: tmp_basis
 
@@ -2957,10 +2968,12 @@ CONTAINS
             IF (ASSOCIATED(qs_kind%sgp_potential)) CALL write_potential(qs_kind%sgp_potential, output_unit)
             IF (ASSOCIATED(qs_kind%tnadd_potential)) CALL write_potential(qs_kind%tnadd_potential, output_unit)
             IF (ASSOCIATED(qs_kind%dft_plus_u)) THEN
-               WRITE (UNIT=output_unit, FMT="(/,T6,A,/,T8,A,T76,I5,/,T8,A,T73,F8.3)") &
-                  "A DFT+U correction is applied to atoms of this atomic kind:", &
-                  "Angular quantum momentum number L:", qs_kind%dft_plus_u%l, &
-                  "U(eff) = (U - J) value in [eV]:", qs_kind%dft_plus_u%u_minus_j_target*evolt
+               DO il = 1, SIZE(qs_kind%dft_plus_u%l)
+                  WRITE (UNIT=output_unit, FMT="(/,T6,A,/,T8,A,T76,I5,/,T8,A,T73,F8.3)") &
+                     "A DFT+U correction is applied to atoms of this atomic kind:", &
+                     "Angular quantum momentum number L:", qs_kind%dft_plus_u%l(il), &
+                     "U(eff) = (U - J) value in [eV]:", qs_kind%dft_plus_u%u_minus_j_target(il)*evolt
+               END DO
                IF (qs_kind%dft_plus_u%u_ramping > 0.0_dp) THEN
                   IF (qs_kind%dft_plus_u%init_u_ramping_each_scf) THEN
                      yon = "YES"

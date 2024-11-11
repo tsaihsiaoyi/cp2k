@@ -2278,9 +2278,9 @@ CONTAINS
                           description="Angular momentum quantum number of the "// &
                           "orbitals to which the correction is applied", &
                           repeats=.FALSE., &
-                          n_var=1, &
+                          n_var=-1, &
                           type_of_var=integer_t, &
-                          default_i_val=-1, &
+                          default_i_vals=(/-1/), &
                           usage="L 2")
       CALL section_add_keyword(section, keyword)
       CALL keyword_release(keyword)
@@ -2290,9 +2290,9 @@ CONTAINS
                           variants=(/"U_EFF"/), &
                           description="Effective parameter U(eff) = U - J", &
                           repeats=.FALSE., &
-                          n_var=1, &
+                          n_var=-1, &
                           type_of_var=real_t, &
-                          default_r_val=0.0_dp, &
+                          default_r_vals=(/0.0_dp/), &
                           unit_str="au_e", &
                           usage="U_MINUS_J [eV] 1.4")
       CALL section_add_keyword(section, keyword)
